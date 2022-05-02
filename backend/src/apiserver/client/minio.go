@@ -46,11 +46,21 @@ func createCredentialProvidersChain(endpoint, accessKey, secretKey string) *cred
 }
 
 func CreateMinioClient(minioServiceHost string, minioServicePort string,
-	accessKey string, secretKey string, secure bool, region string) (*minio.Client, error) {
+	accessKey string, secretKey string, secure bool, region string, forceV2Signature bool) (*minio.Client, error) {
+
+	var minioClient *minio.Client
+	var err error
 
 	endpoint := joinHostPort(minioServiceHost, minioServicePort)
 	cred := createCredentialProvidersChain(endpoint, accessKey, secretKey)
-	minioClient, err := minio.NewWithCredentials(endpoint, cred, secure, region)
+	if forceV2Signature {
+		minioClient, err = minio.NewV2(endpoint,
+			accessKey,
+			secretKey,
+			secure /* Secure connection */)
+	} else {
+		minioClient, err = minio.NewWithCredentials(endpoint, cred, secure, region)
+	}
 	if err != nil {
 		return nil, errors.Wrapf(err, "Error while creating minio client: %+v", err)
 	}
@@ -58,12 +68,12 @@ func CreateMinioClient(minioServiceHost string, minioServicePort string,
 }
 
 func CreateMinioClientOrFatal(minioServiceHost string, minioServicePort string,
-	accessKey string, secretKey string, secure bool, region string, initConnectionTimeout time.Duration) *minio.Client {
+	accessKey string, secretKey string, secure bool, region string, initConnectionTimeout time.Duration, forceV2Signature bool) *minio.Client {
 	var minioClient *minio.Client
 	var err error
 	var operation = func() error {
 		minioClient, err = CreateMinioClient(minioServiceHost, minioServicePort,
-			accessKey, secretKey, secure, region)
+			accessKey, secretKey, secure, region, forceV2Signature)
 		if err != nil {
 			return err
 		}

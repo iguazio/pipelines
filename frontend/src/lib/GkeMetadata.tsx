@@ -14,9 +14,7 @@
  * limitations under the License.
  */
 
-import React, { FC, useState, useEffect } from 'react';
-import { logger, extendError } from './Utils';
-import { Apis } from './Apis';
+import React, { FC, useState } from 'react';
 
 export interface GkeMetadata {
   projectId?: string;
@@ -25,13 +23,13 @@ export interface GkeMetadata {
 export const GkeMetadataContext = React.createContext<GkeMetadata>({});
 export const GkeMetadataProvider: FC<{}> = props => {
   const [metadata, setMetadata] = useState({});
-  useEffect(() => {
-    Apis.getClusterName()
-      .then(clusterName => setMetadata(metadata => ({ ...metadata, clusterName })))
-      .catch(err => logger.warn(extendError(err, 'Failed getting GKE cluster name')));
-    Apis.getProjectId()
-      .then(projectId => setMetadata(metadata => ({ ...metadata, projectId })))
-      .catch(err => logger.warn(extendError(err, 'Failed getting GKE project ID')));
-  }, []);
+  // useEffect(() => {
+  //   Apis.getClusterName()
+  //     .then(clusterName => setMetadata(metadata => ({ ...metadata, clusterName })))
+  //     .catch(err => logger.warn(extendError(err, 'Failed getting GKE cluster name')));
+  //   Apis.getProjectId()
+  //     .then(projectId => setMetadata(metadata => ({ ...metadata, projectId })))
+  //     .catch(err => logger.warn(extendError(err, 'Failed getting GKE project ID')));
+  // }, []);
   return <GkeMetadataContext.Provider value={metadata} {...props} />;
 };

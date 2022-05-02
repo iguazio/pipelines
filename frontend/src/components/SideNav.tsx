@@ -542,21 +542,21 @@ export class SideNav extends React.Component<SideNavInternalProps, SideNavState>
             </Tooltip>
           )}
           <hr className={classes(css.separator, collapsed && css.collapsedSeparator)} />
-          <ExternalUri
-            title={'Documentation'}
-            to={ExternalLinks.DOCUMENTATION}
-            collapsed={collapsed}
-            icon={className => <DescriptionIcon className={className} />}
-          />
-          <ExternalUri
-            title={'Github Repo'}
-            to={ExternalLinks.GITHUB}
-            collapsed={collapsed}
-            icon={className => (
-              <img src={GitHubIcon} className={classes(className, css.iconImage)} alt='Github' />
-            )}
-          />
-          <hr className={classes(css.separator, collapsed && css.collapsedSeparator)} />
+          {/*<ExternalUri*/}
+          {/*  title={'Documentation'}*/}
+          {/*  to={ExternalLinks.DOCUMENTATION}*/}
+          {/*  collapsed={collapsed}*/}
+          {/*  icon={className => <DescriptionIcon className={className} />}*/}
+          {/*/>*/}
+          {/*<ExternalUri*/}
+          {/*  title={'Github Repo'}*/}
+          {/*  to={ExternalLinks.GITHUB}*/}
+          {/*  collapsed={collapsed}*/}
+          {/*  icon={className => (*/}
+          {/*    <img src={GitHubIcon} className={classes(className, css.iconImage)} alt='Github' />*/}
+          {/*  )}*/}
+          {/*/>*/}
+          {/*<hr className={classes(css.separator, collapsed && css.collapsedSeparator)} />*/}
           <IconButton
             className={classes(css.chevron, collapsed && css.collapsedChevron)}
             onClick={this._toggleNavClicked.bind(this)}

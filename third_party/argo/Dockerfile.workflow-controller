@@ -13,9 +13,10 @@
 # limitations under the License.
 
 ARG TAG
-FROM docker.io/argoproj/workflow-controller:${TAG}
+# FROM docker.io/argoproj/workflow-controller:${TAG}
 # Use the following path when we need to fork temporarily.
 # FROM gcr.io/ml-pipeline-test/workflow-controller:v3.2.3
+FROM gcr.io/iguazio/argo-tomer-workflow-controller:latest
 
 # Copy notices, licenses and source code.
 COPY NOTICES/workflow-controller /NOTICES

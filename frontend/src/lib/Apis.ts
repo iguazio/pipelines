@@ -24,6 +24,8 @@ import * as Utils from './Utils';
 import { buildQuery } from './Utils';
 import { StoragePath, StorageService } from './WorkflowParser';
 
+import * as gzip from 'gzip-js';
+
 const v1beta1Prefix = 'apis/v1beta1';
 
 export interface ListRequest {
@@ -413,17 +415,46 @@ export class Apis {
     query?: string,
     init?: RequestInit,
   ): Promise<string> {
+    const compressedExtensions = ["tgz", "gz", "tar", "zip"];
+    let responseText = "uninitialized";
+
     init = Object.assign(init || {}, { credentials: 'same-origin' });
     const response = await fetch((apisPrefix || '') + path + (query ? '?' + query : ''), init);
-    const responseText = await response.text();
+
     if (response.ok) {
-      return responseText;
+
+      // handle known compressed extensions
+      if (compressedExtensions.indexOf(path.split('.').pop()!) > -1) {
+        Utils.logger.verbose(
+            `Path: ${path} is a compressed file. Decompressing`,
+        );
+        const responseBuffer = await response.arrayBuffer();
+        try {
+          let responseUint8array = gzip.unzip(Buffer.from(responseBuffer));
+          responseText = new TextDecoder("utf-8").decode(Buffer.from(responseUint8array));
+
+          // cleanup and extract contents only
+          let startIndex = responseText.indexOf("{");
+          let endIndex = responseText.lastIndexOf("}");
+          responseText = responseText.substring(startIndex, endIndex + 1);
+        } catch (e) {
+          responseText = new TextDecoder("utf-8").decode(Buffer.from(responseBuffer));
+
+          // just log and return the response text
+          Utils.logger.error(
+              `Failed to decompress file: ${path}. \nError: ${e}\nContents: ${responseText}`,
+          );
+        }
+      } else {
+        responseText = await response.text();
+      }
     } else {
       Utils.logger.error(
         `Response for path: ${path} was not 'ok'\n\nResponse was: ${responseText}`,
       );
       throw new Error(responseText);
     }
+    return responseText;
   }
 }
 
