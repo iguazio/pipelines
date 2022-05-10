@@ -68,5 +68,8 @@
   },
   "devDependencies": {
     "standard-version": "^8.0.0"
+  },
+  "dependencies": {
+    "gzip-js": "^0.3.2"
   }
 }
