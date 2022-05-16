@@ -19,6 +19,7 @@ import sys
 import re
 import kubernetes
 import yaml
+import datetime
 from time import sleep
 
 from metadata_helpers import *
@@ -138,248 +139,253 @@ workflow_name_to_context_id = {}
 pods_with_written_metadata = set()
 
 while True:
-    print("Start watching Kubernetes Pods created by Argo")
-    if namespace_to_watch:
-        pod_stream = k8s_watch.stream(
-            k8s_api.list_namespaced_pod,
-            namespace=namespace_to_watch,
-            label_selector=ARGO_WORKFLOW_LABEL_KEY,
-            timeout_seconds=1800,  # Sometimes watch gets stuck
-            _request_timeout=2000,  # Sometimes HTTP GET gets stuck
-        )
-    else:
-        pod_stream = k8s_watch.stream(
-            k8s_api.list_pod_for_all_namespaces,
-            label_selector=ARGO_WORKFLOW_LABEL_KEY,
-            timeout_seconds=1800,  # Sometimes watch gets stuck
-            _request_timeout=2000,  # Sometimes HTTP GET gets stuck
-        )
-    for event in pod_stream:
-        try:
-            obj = event['object']
-            print('Kubernetes Pod event: ', event['type'], obj.metadata.name, obj.metadata.resource_version)
-            if event['type'] == 'ERROR':
-                print(event)
+    try:
+        print("Start watching Kubernetes Pods created by Argo")
+        if namespace_to_watch:
+            pod_stream = k8s_watch.stream(
+                k8s_api.list_namespaced_pod,
+                namespace=namespace_to_watch,
+                label_selector=ARGO_WORKFLOW_LABEL_KEY,
+                timeout_seconds=1800,  # Sometimes watch gets stuck
+                _request_timeout=2000,  # Sometimes HTTP GET gets stuck
+            )
+        else:
+            pod_stream = k8s_watch.stream(
+                k8s_api.list_pod_for_all_namespaces,
+                label_selector=ARGO_WORKFLOW_LABEL_KEY,
+                timeout_seconds=1800,  # Sometimes watch gets stuck
+                _request_timeout=2000,  # Sometimes HTTP GET gets stuck
+            )
+        for event in pod_stream:
+            try:
+                obj = event['object']
+                print('Kubernetes Pod event: ', event['type'], obj.metadata.name, obj.metadata.resource_version)
+                if event['type'] == 'ERROR':
+                    print(event)
 
-            pod_name = obj.metadata.name
+                pod_name = obj.metadata.name
 
-            # Logging pod changes for debugging
-            with open('/tmp/pod_' + obj.metadata.name + '_' + obj.metadata.resource_version, 'w') as f:
-                f.write(yaml.dump(obj.to_dict()))
+                # Logging pod changes for debugging
+                with open('/tmp/pod_' + obj.metadata.name + '_' + obj.metadata.resource_version, 'w') as f:
+                    f.write(yaml.dump(obj.to_dict()))
 
-            assert obj.kind == 'Pod'
+                assert obj.kind == 'Pod'
 
-            if METADATA_WRITTEN_LABEL_KEY in obj.metadata.labels:
-                continue
+                if METADATA_WRITTEN_LABEL_KEY in obj.metadata.labels:
+                    continue
 
-            # Skip TFX pods - they have their own metadata writers
-            if is_tfx_pod(obj):
-                continue
+                # Skip TFX pods - they have their own metadata writers
+                if is_tfx_pod(obj):
+                    continue
 
-            # Skip KFP v2 pods - they have their own metadat writers
-            if is_kfp_v2_pod(obj):
-                continue
+                # Skip KFP v2 pods - they have their own metadat writers
+                if is_kfp_v2_pod(obj):
+                    continue
 
-            argo_workflow_name = obj.metadata.labels[ARGO_WORKFLOW_LABEL_KEY] # Should exist due to initial filtering
-            argo_template = {}
-            for env in obj.spec.containers[0].env:
-                if env.name == ARGO_TEMPLATE_ENV_KEY:
-                    argo_template = json.loads(env.value)
-                    break
+                argo_workflow_name = obj.metadata.labels[ARGO_WORKFLOW_LABEL_KEY] # Should exist due to initial filtering
+                argo_template = {}
+                for env in obj.spec.containers[0].env:
+                    if env.name == ARGO_TEMPLATE_ENV_KEY:
+                        argo_template = json.loads(env.value)
+                        break
 
-            # Should we throw error instead if argo template not found?
-            argo_template_name = argo_template.get('name', '')
+                # Should we throw error instead if argo template not found?
+                argo_template_name = argo_template.get('name', '')
 
-            component_name = argo_template_name
-            component_version = component_name
-            argo_output_name_to_type = {}
-            if KFP_COMPONENT_SPEC_ANNOTATION_KEY in obj.metadata.annotations:
-                component_spec_text = obj.metadata.annotations[KFP_COMPONENT_SPEC_ANNOTATION_KEY]
-                component_spec = json.loads(component_spec_text)
-                component_spec_digest = hashlib.sha256(component_spec_text.encode()).hexdigest()
-                component_name = component_spec.get('name', component_name)
-                component_version = component_name + '@sha256=' + component_spec_digest
-                output_name_to_type = {output['name']: output.get('type', None) for output in component_spec.get('outputs', [])}
-                argo_output_name_to_type = {output_name_to_argo(k): v for k, v in output_name_to_type.items() if v}
+                component_name = argo_template_name
+                component_version = component_name
+                argo_output_name_to_type = {}
+                if KFP_COMPONENT_SPEC_ANNOTATION_KEY in obj.metadata.annotations:
+                    component_spec_text = obj.metadata.annotations[KFP_COMPONENT_SPEC_ANNOTATION_KEY]
+                    component_spec = json.loads(component_spec_text)
+                    component_spec_digest = hashlib.sha256(component_spec_text.encode()).hexdigest()
+                    component_name = component_spec.get('name', component_name)
+                    component_version = component_name + '@sha256=' + component_spec_digest
+                    output_name_to_type = {output['name']: output.get('type', None) for output in component_spec.get('outputs', [])}
+                    argo_output_name_to_type = {output_name_to_argo(k): v for k, v in output_name_to_type.items() if v}
 
-            if obj.metadata.name in pod_name_to_execution_id:
-                execution_id = pod_name_to_execution_id[obj.metadata.name]
-                context_id = workflow_name_to_context_id[argo_workflow_name]
-            elif METADATA_EXECUTION_ID_LABEL_KEY in obj.metadata.labels:
-                execution_id = int(obj.metadata.labels[METADATA_EXECUTION_ID_LABEL_KEY])
-                context_id = int(obj.metadata.labels[METADATA_CONTEXT_ID_LABEL_KEY])
-                print('Found execution id: {}, context id: {} for pod {}.'.format(execution_id, context_id, obj.metadata.name))
-            else:
-                run_context = get_or_create_run_context(
-                    store=mlmd_store,
-                    run_id=argo_workflow_name, # We can switch to internal run IDs once backend starts adding them
-                )
-
-                # Saving input paramater arguments
-                execution_custom_properties = {}
-                if KFP_PARAMETER_ARGUMENTS_ANNOTATION_KEY in obj.metadata.annotations:
-                    parameter_arguments_json = obj.metadata.annotations[KFP_PARAMETER_ARGUMENTS_ANNOTATION_KEY]
-                    try:
-                        parameter_arguments = json.loads(parameter_arguments_json)
-                        for paramater_name, parameter_value in parameter_arguments.items():
-                            execution_custom_properties['input:' + paramater_name] = parameter_value
-                    except Exception:
-                        pass
-
-                # Adding new execution to the database
-                execution = create_new_execution_in_existing_run_context(
-                    store=mlmd_store,
-                    context_id=run_context.id,
-                    execution_type_name=KFP_EXECUTION_TYPE_NAME_PREFIX + component_version,
-                    pod_name=pod_name,
-                    pipeline_name=argo_workflow_name,
-                    run_id=argo_workflow_name,
-                    instance_id=component_name,
-                    custom_properties=execution_custom_properties,
-                )
-
-                argo_input_artifacts = argo_template.get('inputs', {}).get('artifacts', [])
-                input_artifact_ids = []
-                for argo_artifact in argo_input_artifacts:
-                    artifact_uri = argo_artifact_to_uri(argo_artifact)
-                    if not artifact_uri:
-                        continue
-
-                    input_name = argo_artifact.get('path', '') # Every artifact should have a path in Argo
-                    input_artifact_path_prefix = '/tmp/inputs/'
-                    input_artifact_path_postfix = '/data'
-                    if input_name.startswith(input_artifact_path_prefix):
-                        input_name = input_name[len(input_artifact_path_prefix):]
-                    if input_name.endswith(input_artifact_path_postfix):
-                        input_name = input_name[0: -len(input_artifact_path_postfix)]
-
-                    artifact = link_execution_to_input_artifact(
+                if obj.metadata.name in pod_name_to_execution_id:
+                    execution_id = pod_name_to_execution_id[obj.metadata.name]
+                    context_id = workflow_name_to_context_id[argo_workflow_name]
+                elif METADATA_EXECUTION_ID_LABEL_KEY in obj.metadata.labels:
+                    execution_id = int(obj.metadata.labels[METADATA_EXECUTION_ID_LABEL_KEY])
+                    context_id = int(obj.metadata.labels[METADATA_CONTEXT_ID_LABEL_KEY])
+                    print('Found execution id: {}, context id: {} for pod {}.'.format(execution_id, context_id, obj.metadata.name))
+                else:
+                    run_context = get_or_create_run_context(
                         store=mlmd_store,
-                        execution_id=execution.id,
-                        uri=artifact_uri,
-                        input_name=input_name,
+                        run_id=argo_workflow_name, # We can switch to internal run IDs once backend starts adding them
                     )
-                    if artifact is None:
-                        # TODO: Maybe there is a better way to handle missing upstream artifacts
-                        continue
 
-                    input_artifact_ids.append(dict(
-                        id=artifact.id,
-                        name=input_name,
-                        uri=artifact.uri,
-                    ))
-                    print('Found Input Artifact: ' + str(dict(
-                        input_name=input_name,
-                        id=artifact.id,
-                        uri=artifact.uri,
-                    )))
+                    # Saving input paramater arguments
+                    execution_custom_properties = {}
+                    if KFP_PARAMETER_ARGUMENTS_ANNOTATION_KEY in obj.metadata.annotations:
+                        parameter_arguments_json = obj.metadata.annotations[KFP_PARAMETER_ARGUMENTS_ANNOTATION_KEY]
+                        try:
+                            parameter_arguments = json.loads(parameter_arguments_json)
+                            for paramater_name, parameter_value in parameter_arguments.items():
+                                execution_custom_properties['input:' + paramater_name] = parameter_value
+                        except Exception:
+                            pass
 
-                execution_id = execution.id
-                context_id = run_context.id
+                    # Adding new execution to the database
+                    execution = create_new_execution_in_existing_run_context(
+                        store=mlmd_store,
+                        context_id=run_context.id,
+                        execution_type_name=KFP_EXECUTION_TYPE_NAME_PREFIX + component_version,
+                        pod_name=pod_name,
+                        pipeline_name=argo_workflow_name,
+                        run_id=argo_workflow_name,
+                        instance_id=component_name,
+                        custom_properties=execution_custom_properties,
+                    )
 
-                obj.metadata.labels[METADATA_EXECUTION_ID_LABEL_KEY] = execution_id
-                obj.metadata.labels[METADATA_CONTEXT_ID_LABEL_KEY] = context_id
-
-                metadata_to_add = {
-                    'labels': {
-                        METADATA_EXECUTION_ID_LABEL_KEY: str(execution_id),
-                        METADATA_CONTEXT_ID_LABEL_KEY: str(context_id),
-                    },
-                    'annotations': {
-                        METADATA_INPUT_ARTIFACT_IDS_ANNOTATION_KEY: json.dumps(input_artifact_ids),
-                    },
-                }
-
-                patch_pod_metadata(
-                    namespace=obj.metadata.namespace,
-                    pod_name=obj.metadata.name,
-                    patch=metadata_to_add,
-                )
-                pod_name_to_execution_id[obj.metadata.name] = execution_id
-                workflow_name_to_context_id[argo_workflow_name] = context_id
-
-                print('New execution id: {}, context id: {} for pod {}.'.format(execution_id, context_id, obj.metadata.name))
-
-                print('Execution: ' + str(dict(
-                    context_id=context_id,
-                    context_name=argo_workflow_name,
-                    execution_id=execution_id,
-                    execution_name=obj.metadata.name,
-                    component_name=component_name,
-                )))
-
-                # TODO: Log input parameters as execution options.
-                # Unfortunately, DSL compiler loses the information about inputs and their arguments.
-
-            if (
-                obj.metadata.name not in pods_with_written_metadata
-                and (
-                    obj.metadata.labels.get(ARGO_COMPLETED_LABEL_KEY, 'false') == 'true'
-                    or ARGO_OUTPUTS_ANNOTATION_KEY in obj.metadata.annotations
-                )
-            ):
-                artifact_ids = []
-
-                if ARGO_OUTPUTS_ANNOTATION_KEY in obj.metadata.annotations: # Should be present
-                    argo_outputs = json.loads(obj.metadata.annotations[ARGO_OUTPUTS_ANNOTATION_KEY])
-                    argo_output_artifacts = {}
-
-                    for artifact in argo_outputs.get('artifacts', []):
-                        art_name = artifact['name']
-                        output_prefix = argo_template_name + '-'
-                        if art_name.startswith(output_prefix):
-                            art_name = art_name[len(output_prefix):]
-                        argo_output_artifacts[art_name] = artifact
-
-                    output_artifacts = []
-                    for name, art in argo_output_artifacts.items():
-                        artifact_uri = argo_artifact_to_uri(art)
+                    argo_input_artifacts = argo_template.get('inputs', {}).get('artifacts', [])
+                    input_artifact_ids = []
+                    for argo_artifact in argo_input_artifacts:
+                        artifact_uri = argo_artifact_to_uri(argo_artifact)
                         if not artifact_uri:
                             continue
-                        artifact_type_name = argo_output_name_to_type.get(name, 'NoType') # Cannot be None or ''
 
-                        print('Adding Output Artifact: ' + str(dict(
-                            output_name=name,
+                        input_name = argo_artifact.get('path', '') # Every artifact should have a path in Argo
+                        input_artifact_path_prefix = '/tmp/inputs/'
+                        input_artifact_path_postfix = '/data'
+                        if input_name.startswith(input_artifact_path_prefix):
+                            input_name = input_name[len(input_artifact_path_prefix):]
+                        if input_name.endswith(input_artifact_path_postfix):
+                            input_name = input_name[0: -len(input_artifact_path_postfix)]
+
+                        artifact = link_execution_to_input_artifact(
+                            store=mlmd_store,
+                            execution_id=execution.id,
                             uri=artifact_uri,
-                            type=artifact_type_name,
+                            input_name=input_name,
+                        )
+                        if artifact is None:
+                            # TODO: Maybe there is a better way to handle missing upstream artifacts
+                            continue
+
+                        input_artifact_ids.append(dict(
+                            id=artifact.id,
+                            name=input_name,
+                            uri=artifact.uri,
+                        ))
+                        print('Found Input Artifact: ' + str(dict(
+                            input_name=input_name,
+                            id=artifact.id,
+                            uri=artifact.uri,
                         )))
 
-                        artifact = create_new_output_artifact(
-                            store=mlmd_store,
-                            execution_id=execution_id,
-                            context_id=context_id,
-                            uri=artifact_uri,
-                            type_name=artifact_type_name,
-                            output_name=name,
-                            #run_id='Context_' + str(context_id) + '_run',
-                            run_id=argo_workflow_name,
-                            argo_artifact=art,
-                        )
+                    execution_id = execution.id
+                    context_id = run_context.id
 
-                        artifact_ids.append(dict(
-                            id=artifact.id,
-                            name=name,
-                            uri=artifact_uri,
-                            type=artifact_type_name,
-                        ))
+                    obj.metadata.labels[METADATA_EXECUTION_ID_LABEL_KEY] = execution_id
+                    obj.metadata.labels[METADATA_CONTEXT_ID_LABEL_KEY] = context_id
 
-                metadata_to_add = {
-                    'labels': {
-                        METADATA_WRITTEN_LABEL_KEY: 'true',
-                    },
-                    'annotations': {
-                        METADATA_OUTPUT_ARTIFACT_IDS_ANNOTATION_KEY: json.dumps(artifact_ids),
-                    },
-                }
+                    metadata_to_add = {
+                        'labels': {
+                            METADATA_EXECUTION_ID_LABEL_KEY: str(execution_id),
+                            METADATA_CONTEXT_ID_LABEL_KEY: str(context_id),
+                        },
+                        'annotations': {
+                            METADATA_INPUT_ARTIFACT_IDS_ANNOTATION_KEY: json.dumps(input_artifact_ids),
+                        },
+                    }
 
-                patch_pod_metadata(
-                    namespace=obj.metadata.namespace,
-                    pod_name=obj.metadata.name,
-                    patch=metadata_to_add,
-                )
+                    patch_pod_metadata(
+                        namespace=obj.metadata.namespace,
+                        pod_name=obj.metadata.name,
+                        patch=metadata_to_add,
+                    )
+                    pod_name_to_execution_id[obj.metadata.name] = execution_id
+                    workflow_name_to_context_id[argo_workflow_name] = context_id
 
-                pods_with_written_metadata.add(obj.metadata.name)
+                    print('New execution id: {}, context id: {} for pod {}.'.format(execution_id, context_id, obj.metadata.name))
 
-        except Exception as e:
-            import traceback
-            print(traceback.format_exc())
+                    print('Execution: ' + str(dict(
+                        context_id=context_id,
+                        context_name=argo_workflow_name,
+                        execution_id=execution_id,
+                        execution_name=obj.metadata.name,
+                        component_name=component_name,
+                    )))
+
+                    # TODO: Log input parameters as execution options.
+                    # Unfortunately, DSL compiler loses the information about inputs and their arguments.
+
+                if (
+                    obj.metadata.name not in pods_with_written_metadata
+                    and (
+                        obj.metadata.labels.get(ARGO_COMPLETED_LABEL_KEY, 'false') == 'true'
+                        or ARGO_OUTPUTS_ANNOTATION_KEY in obj.metadata.annotations
+                    )
+                ):
+                    artifact_ids = []
+
+                    if ARGO_OUTPUTS_ANNOTATION_KEY in obj.metadata.annotations: # Should be present
+                        argo_outputs = json.loads(obj.metadata.annotations[ARGO_OUTPUTS_ANNOTATION_KEY])
+                        argo_output_artifacts = {}
+
+                        for artifact in argo_outputs.get('artifacts', []):
+                            art_name = artifact['name']
+                            output_prefix = argo_template_name + '-'
+                            if art_name.startswith(output_prefix):
+                                art_name = art_name[len(output_prefix):]
+                            argo_output_artifacts[art_name] = artifact
+
+                        output_artifacts = []
+                        for name, art in argo_output_artifacts.items():
+                            artifact_uri = argo_artifact_to_uri(art)
+                            if not artifact_uri:
+                                continue
+                            artifact_type_name = argo_output_name_to_type.get(name, 'NoType') # Cannot be None or ''
+
+                            print('Adding Output Artifact: ' + str(dict(
+                                output_name=name,
+                                uri=artifact_uri,
+                                type=artifact_type_name,
+                            )))
+
+                            artifact = create_new_output_artifact(
+                                store=mlmd_store,
+                                execution_id=execution_id,
+                                context_id=context_id,
+                                uri=artifact_uri,
+                                type_name=artifact_type_name,
+                                output_name=name,
+                                #run_id='Context_' + str(context_id) + '_run',
+                                run_id=argo_workflow_name,
+                                argo_artifact=art,
+                            )
+
+                            artifact_ids.append(dict(
+                                id=artifact.id,
+                                name=name,
+                                uri=artifact_uri,
+                                type=artifact_type_name,
+                            ))
+
+                    metadata_to_add = {
+                        'labels': {
+                            METADATA_WRITTEN_LABEL_KEY: 'true',
+                        },
+                        'annotations': {
+                            METADATA_OUTPUT_ARTIFACT_IDS_ANNOTATION_KEY: json.dumps(artifact_ids),
+                        },
+                    }
+
+                    patch_pod_metadata(
+                        namespace=obj.metadata.namespace,
+                        pod_name=obj.metadata.name,
+                        patch=metadata_to_add,
+                    )
+
+                    pods_with_written_metadata.add(obj.metadata.name)
+
+            except Exception as e:
+                import traceback
+                print(traceback.format_exc())
+
+    except Exception as e:
+        print(datetime.datetime.now(), "Failed watching Argo kubernetes pods. Last exception:", e)
+        continue
